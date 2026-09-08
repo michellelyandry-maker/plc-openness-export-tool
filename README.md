@@ -220,15 +220,4 @@ versions.
 
 \- Project-specific version control repos are created from:
 
-&#x20; `plc-project-template` (ask your supervisor or team for the link)
-
-
-
-\## Questions
-
-
-
-Contact Michelle Lyandry for questions about this tool or the overall
-
-version control workflow.
-
+&#x20; `plc-project-template` 
