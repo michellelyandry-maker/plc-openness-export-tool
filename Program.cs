@@ -1,8 +1,10 @@
 ﻿using Siemens.Engineering;
 using Siemens.Engineering.HW;
+using Siemens.Engineering.HW.Features;
+using Siemens.Engineering.SW;
+using Siemens.Engineering.SW.Blocks;
 using System;
 using System.Collections.Generic;
-using System.Configuration;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
@@ -14,44 +16,56 @@ namespace PLC_Openness_Export
         static string SettingsFilePath =>
             Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "last_used_paths.json");
 
+        static bool NonInteractiveMode = false;
+
         static void Main(string[] args)
         {
+            // Parse command-line arguments: --project "path" --output "folder"
+            string argProjectPath = null;
+            string argExportFolder = null;
+
+            for (int i = 0; i < args.Length - 1; i++)
+            {
+                if (args[i] == "--project") argProjectPath = args[i + 1];
+                if (args[i] == "--output") argExportFolder = args[i + 1];
+            }
+
+            NonInteractiveMode = !string.IsNullOrWhiteSpace(argProjectPath) && !string.IsNullOrWhiteSpace(argExportFolder);
+
             try
             {
-                RunExport();
+                RunExport(argProjectPath, argExportFolder);
             }
             catch (Siemens.Engineering.EngineeringSecurityException)
             {
-                PrintPermissionError();
+                HandleFailure("Windows account not authorized for TIA Portal Openness. Add it to the 'Siemens TIA Openness' group and restart.");
             }
             catch (System.Reflection.TargetInvocationException ex) when (ex.InnerException is Siemens.Engineering.EngineeringSecurityException)
             {
-                PrintPermissionError();
+                HandleFailure("Windows account not authorized for TIA Portal Openness. Add it to the 'Siemens TIA Openness' group and restart.");
             }
             catch (Exception ex)
             {
+                HandleFailure(ex.Message);
+            }
+        }
+
+        static void HandleFailure(string message)
+        {
+            if (NonInteractiveMode)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new { success = false, message }));
+                Environment.Exit(1);
+            }
+            else
+            {
                 Console.WriteLine();
                 Console.WriteLine("=== Something went wrong ===");
-                Console.WriteLine(ex.Message);
+                Console.WriteLine(message);
                 Console.WriteLine();
                 Console.WriteLine("Press Enter to exit.");
                 Console.ReadLine();
             }
-        }
-
-        static void PrintPermissionError()
-        {
-            Console.WriteLine();
-            Console.WriteLine("=== Permission Error ===");
-            Console.WriteLine("Your Windows account isn't authorized to use TIA Portal Openness.");
-            Console.WriteLine();
-            Console.WriteLine("Fix: ask IT or an admin to run this command (as Administrator):");
-            Console.WriteLine(@"  net localgroup ""Siemens TIA Openness"" ""YOUR_USERNAME"" /add");
-            Console.WriteLine();
-            Console.WriteLine("Then restart your computer and run this tool again.");
-            Console.WriteLine();
-            Console.WriteLine("Press Enter to exit.");
-            Console.ReadLine();
         }
 
         class LastUsedPaths
@@ -70,10 +84,7 @@ namespace PLC_Openness_Export
                     return JsonSerializer.Deserialize<LastUsedPaths>(json);
                 }
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[DEBUG] Failed to load last-used paths: {ex.Message}");
-            }
+            catch { }
             return new LastUsedPaths();
         }
 
@@ -84,135 +95,178 @@ namespace PLC_Openness_Export
                 var options = new JsonSerializerOptions { WriteIndented = true };
                 File.WriteAllText(SettingsFilePath, JsonSerializer.Serialize(paths, options));
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[DEBUG] Failed to save last-used paths: {ex.Message}");
-            }
+            catch { }
         }
 
-        static void RunExport()
+        static void RunExport(string argProjectPath, string argExportFolder)
         {
             var lastUsed = LoadLastUsedPaths();
 
-            // Connecting to TIA Portal: either attach to a running instance or start a new one
             var instances = TiaPortal.GetProcesses();
             TiaPortal tia;
 
             if (instances.Any())
             {
                 tia = instances.First().Attach();
-                Console.WriteLine("Attached to running TIA Portal instance.");
+                if (!NonInteractiveMode) Console.WriteLine("Attached to running TIA Portal instance.");
             }
             else
             {
                 tia = new TiaPortal(TiaPortalMode.WithUserInterface);
-                Console.WriteLine("Started new TIA Portal instance.");
+                if (!NonInteractiveMode) Console.WriteLine("Started new TIA Portal instance.");
             }
 
-            // Project selection: either use the last-used project or ask the user for a new one
-            string projectPath = null;
+            // Project path: from args if provided, else interactive prompt
+            string projectPath = argProjectPath;
 
-            if (!string.IsNullOrWhiteSpace(lastUsed.ProjectPath) && File.Exists(lastUsed.ProjectPath))
+            if (string.IsNullOrWhiteSpace(projectPath))
             {
-                Console.WriteLine();
-                Console.WriteLine($"Using saved project: {lastUsed.ProjectPath}");
-                Console.WriteLine("(To use a different project, type its path now, or just press Enter to continue.)");
-                string overrideInput = Console.ReadLine()?.Trim().Trim('"');
-
-                if (!string.IsNullOrWhiteSpace(overrideInput))
-                {
-                    projectPath = overrideInput;
-                }
-                else
-                {
-                    projectPath = lastUsed.ProjectPath;
-                }
-            }
-
-            while (!File.Exists(projectPath))
-            {
-                Console.WriteLine();
-                Console.WriteLine("Enter the full path to your .ap16 project file:");
-                Console.WriteLine(@"(example: C:\Users\YourName\Documents\Automation\MyProject\MyProject.ap16)");
-                projectPath = Console.ReadLine()?.Trim().Trim('"');
-
-                if (!File.Exists(projectPath))
+                if (!string.IsNullOrWhiteSpace(lastUsed.ProjectPath) && File.Exists(lastUsed.ProjectPath))
                 {
                     Console.WriteLine();
-                    Console.WriteLine("That file wasn't found. Please check the path and try again.");
+                    Console.WriteLine($"Using saved project: {lastUsed.ProjectPath}");
+                    Console.WriteLine("(To use a different project, type its path now, or just press Enter to continue.)");
+                    string overrideInput = Console.ReadLine()?.Trim().Trim('"');
+                    projectPath = string.IsNullOrWhiteSpace(overrideInput) ? lastUsed.ProjectPath : overrideInput;
                 }
+
+                while (!File.Exists(projectPath))
+                {
+                    Console.WriteLine();
+                    Console.WriteLine("Enter the full path to your .ap16 project file:");
+                    projectPath = Console.ReadLine()?.Trim().Trim('"');
+                    if (!File.Exists(projectPath))
+                    {
+                        Console.WriteLine("That file wasn't found. Please check the path and try again.");
+                    }
+                }
+            }
+            else if (!File.Exists(projectPath))
+            {
+                throw new FileNotFoundException($"Project file not found: {projectPath}");
             }
 
             var projectFile = new FileInfo(projectPath);
             Project project = tia.Projects.Open(projectFile);
+            if (!NonInteractiveMode) Console.WriteLine($"Opened project: {project.Name}");
 
-            Console.WriteLine($"Opened project: {project.Name}");
-
-            // Walk through the devices and their modules, building a data structure to serialize
+            // Hardware export
             var deviceList = new List<object>();
-
             foreach (Device device in project.Devices)
             {
                 var deviceItems = new List<object>();
-
                 foreach (DeviceItem item in device.DeviceItems)
                 {
                     deviceItems.Add(BuildDeviceItemData(item));
                 }
-
-                deviceList.Add(new
-                {
-                    DeviceName = device.Name,
-                    Modules = deviceItems
-                });
+                deviceList.Add(new { DeviceName = device.Name, Modules = deviceItems });
             }
 
-            // Convert the data structure to JSON
             var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
-            string json = JsonSerializer.Serialize(deviceList, jsonOptions);
+            string hardwareJson = JsonSerializer.Serialize(deviceList, jsonOptions);
 
-            // Export the JSON to a file, either using the last-used export folder or asking the user for a new one
-            Console.WriteLine();
-            string exportFolder;
+            // Export folder: from args if provided, else interactive prompt
+            string exportFolder = argExportFolder;
 
-            if (!string.IsNullOrWhiteSpace(lastUsed.ExportFolder))
+            if (string.IsNullOrWhiteSpace(exportFolder))
             {
-                Console.WriteLine($"Using saved export folder: {lastUsed.ExportFolder}");
-                Console.WriteLine("(To use a different folder, type it now, or just press Enter to continue.)");
-                string overrideInput = Console.ReadLine()?.Trim().Trim('"');
-
-                exportFolder = string.IsNullOrWhiteSpace(overrideInput)
-                    ? lastUsed.ExportFolder
-                    : overrideInput;
-            }
-            else
-            {
-                Console.WriteLine(@"Enter the folder to save the export to (or press Enter to use C:\PLC_Export):");
-                string input = Console.ReadLine()?.Trim().Trim('"');
-                exportFolder = string.IsNullOrWhiteSpace(input) ? @"C:\PLC_Export" : input;
+                Console.WriteLine();
+                if (!string.IsNullOrWhiteSpace(lastUsed.ExportFolder))
+                {
+                    Console.WriteLine($"Using saved export folder: {lastUsed.ExportFolder}");
+                    Console.WriteLine("(To use a different folder, type it now, or just press Enter to continue.)");
+                    string overrideInput = Console.ReadLine()?.Trim().Trim('"');
+                    exportFolder = string.IsNullOrWhiteSpace(overrideInput) ? lastUsed.ExportFolder : overrideInput;
+                }
+                else
+                {
+                    Console.WriteLine(@"Enter the folder to save the export to (or press Enter to use C:\PLC_Export):");
+                    string input = Console.ReadLine()?.Trim().Trim('"');
+                    exportFolder = string.IsNullOrWhiteSpace(input) ? @"C:\PLC_Export" : input;
+                }
             }
 
             Directory.CreateDirectory(exportFolder);
-            string exportPath = Path.Combine(exportFolder, "hardware_config.json");
-            File.WriteAllText(exportPath, json);
+            string hardwarePath = Path.Combine(exportFolder, "hardware_config.json");
+            File.WriteAllText(hardwarePath, hardwareJson);
+            if (!NonInteractiveMode) Console.WriteLine($"Hardware config exported to: {hardwarePath}");
 
-            // Save the last-used paths for next time
-            SaveLastUsedPaths(new LastUsedPaths
+            // Block export via Openness
+            string blocksFolder = Path.Combine(exportFolder, "Blocks");
+            Directory.CreateDirectory(blocksFolder);
+
+            int exportedCount = 0;
+            int skippedCount = 0;
+
+            foreach (Device device in project.Devices)
             {
-                ProjectPath = projectPath,
-                ExportFolder = exportFolder
-            });
+                foreach (DeviceItem item in device.DeviceItems)
+                {
+                    var softwareContainer = item.GetService<SoftwareContainer>();
+                    if (softwareContainer?.Software is PlcSoftware plcSoftware)
+                    {
+                        ExportBlockGroup(plcSoftware.BlockGroup, blocksFolder, ref exportedCount, ref skippedCount);
+                    }
+                }
+            }
 
-            Console.WriteLine();
-            Console.WriteLine($"Hardware config exported to: {exportPath}");
-            Console.WriteLine("Success. Press Enter to exit.");
-            Console.ReadLine();
+            if (!NonInteractiveMode)
+                Console.WriteLine($"Program blocks exported to: {blocksFolder} ({exportedCount} exported, {skippedCount} skipped)");
+
+            SaveLastUsedPaths(new LastUsedPaths { ProjectPath = projectPath, ExportFolder = exportFolder });
+
+            if (NonInteractiveMode)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    success = true,
+                    projectName = project.Name,
+                    hardwareConfigPath = hardwarePath,
+                    blocksFolder = blocksFolder,
+                    blocksExported = exportedCount,
+                    blocksSkipped = skippedCount
+                }));
+            }
+            else
+            {
+                Console.WriteLine();
+                Console.WriteLine("Success. Press Enter to exit.");
+                Console.ReadLine();
+            }
+        }
+
+        static void ExportBlockGroup(PlcBlockGroup group, string targetFolder, ref int exportedCount, ref int skippedCount)
+        {
+            foreach (PlcBlock block in group.Blocks)
+            {
+                try
+                {
+                    string safeName = string.Join("_", block.Name.Split(Path.GetInvalidFileNameChars()));
+                    var exportFile = new FileInfo(Path.Combine(targetFolder, $"{safeName}.xml"));
+
+                    if (exportFile.Exists)
+                    {
+                        exportFile.Delete();
+                    }
+
+                    block.Export(exportFile, Siemens.Engineering.ExportOptions.WithDefaults);
+                    exportedCount++;
+                }
+                catch
+                {
+                    skippedCount++;
+                }
+            }
+
+            foreach (PlcBlockGroup subGroup in group.Groups)
+            {
+                ExportBlockGroup(subGroup, targetFolder, ref exportedCount, ref skippedCount);
+            }
         }
 
         static object BuildDeviceItemData(DeviceItem item)
         {
-            var attributes = new Dictionary<string, string>(); 
-
+            var attributes = new Dictionary<string, string>();
             foreach (var attrInfo in item.GetAttributeInfos())
             {
                 try
@@ -220,12 +274,9 @@ namespace PLC_Openness_Export
                     var value = item.GetAttribute(attrInfo.Name);
                     attributes[attrInfo.Name] = value?.ToString() ?? "";
                 }
-                catch
-                {
-                    // Some attributes aren't readable for every item type - skip 
-                }
+                catch { }
             }
-           
+
             var children = new List<object>();
             foreach (DeviceItem child in item.DeviceItems)
             {
@@ -242,4 +293,3 @@ namespace PLC_Openness_Export
         }
     }
 }
-
