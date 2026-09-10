@@ -192,6 +192,58 @@ the commit step. `git diff` will show exactly what changed between
 
 versions.
 
+## Optional: Use this tool from Cursor (AI-assisted, no manual commands)
+
+Instead of running the .exe directly, you can wire this tool into Cursor
+so you can trigger exports by just asking in plain English (e.g. "export
+this PLC project").
+
+### One-time setup
+
+1. Install `uv` (needed to also run the git MCP server, if you're using
+   that too):
+
+powershell -c "Set-ExecutionPolicy RemoteSigned -scope CurrentUser"
+irm https://astral.sh/uv/install.ps1 | iex
+
+2. Install Python 3.10+ if you don't have it (https://python.org).
+3. Install the MCP Python SDK (pinned below v2, since this project uses
+   the v1 API):
+
+pip install "mcp<2"
+
+4. Build this project in **Release** mode (Build → Configuration Manager
+   → Release → Build Solution), so `server.py` can find the compiled
+   `.exe` next to it.
+
+### Wire it into a project
+
+In the PLC project's own repo (the one you're tracking with Git), create
+a file at `.cursor/mcp.json` with:
+
+```json
+{
+  "mcpServers": {
+    "git": {
+      "command": "uvx",
+      "args": ["mcp-server-git", "--repository", "."]
+    },
+    "plc-export": {
+      "command": "python",
+      "args": ["[full path to this tool repo]\\server.py"]
+    }
+  }
+}
+```
+
+Replace `[full path to this tool repo]` with wherever you cloned this
+repository on your machine (e.g.
+`C:\Users\YourName\source\repos\PLC_Openness_Export`).
+
+Open that PLC project's folder in Cursor, and ask it something like:
+
+Export the PLC project at [path to .ap16] to [path to this repo folder]
+
 
 
 \## Troubleshooting
