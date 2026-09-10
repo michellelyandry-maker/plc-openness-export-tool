@@ -1,10 +1,11 @@
 import subprocess
 import json
+import os
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("plc-export")
 
-EXE_PATH = r"C:\Users\Michelle Lyandry\source\repos\PLC_Openness_Export\PLC_Openness_Export\bin\Release\PLC_Openness_Export.exe"
+EXE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin", "Release", "PLC_Openness_Export.exe")
 
 @mcp.tool()
 def export_plc_project(project_path: str, output_folder: str) -> dict:

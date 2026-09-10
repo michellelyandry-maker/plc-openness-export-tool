@@ -102,20 +102,6 @@ namespace PLC_Openness_Export
         {
             var lastUsed = LoadLastUsedPaths();
 
-            var instances = TiaPortal.GetProcesses();
-            TiaPortal tia;
-
-            if (instances.Any())
-            {
-                tia = instances.First().Attach();
-                if (!NonInteractiveMode) Console.WriteLine("Attached to running TIA Portal instance.");
-            }
-            else
-            {
-                tia = new TiaPortal(TiaPortalMode.WithUserInterface);
-                if (!NonInteractiveMode) Console.WriteLine("Started new TIA Portal instance.");
-            }
-
             // Project path: from args if provided, else interactive prompt
             string projectPath = argProjectPath;
 
@@ -147,8 +133,9 @@ namespace PLC_Openness_Export
             }
 
             var projectFile = new FileInfo(projectPath);
-            Project project = tia.Projects.Open(projectFile);
-            if (!NonInteractiveMode) Console.WriteLine($"Opened project: {project.Name}");
+            TiaPortal tia = AttachToPortal(projectFile);
+            Project project = GetOrOpenProject(tia, projectFile);
+            if (!NonInteractiveMode) Console.WriteLine($"Using project: {project.Name}");
 
             // Hardware export
             var deviceList = new List<object>();
@@ -233,6 +220,59 @@ namespace PLC_Openness_Export
                 Console.WriteLine("Success. Press Enter to exit.");
                 Console.ReadLine();
             }
+        }
+
+        static TiaPortal AttachToPortal(FileInfo projectFile)
+        {
+            var processes = TiaPortal.GetProcesses();
+            if (!processes.Any())
+            {
+                if (!NonInteractiveMode) Console.WriteLine("Started new TIA Portal instance.");
+                return new TiaPortal(TiaPortalMode.WithUserInterface);
+            }
+
+            foreach (var process in processes)
+            {
+                TiaPortal attached = process.Attach();
+                if (FindOpenProject(attached, projectFile) != null)
+                {
+                    if (!NonInteractiveMode) Console.WriteLine("Attached to running TIA Portal instance with this project.");
+                    return attached;
+                }
+            }
+
+            if (!NonInteractiveMode) Console.WriteLine("Attached to running TIA Portal instance.");
+            return processes.First().Attach();
+        }
+
+        static Project GetOrOpenProject(TiaPortal tia, FileInfo projectFile)
+        {
+            Project alreadyOpen = FindOpenProject(tia, projectFile);
+            if (alreadyOpen != null)
+                return alreadyOpen;
+
+            if (tia.Projects.Any())
+            {
+                Project other = tia.Projects.First();
+                throw new InvalidOperationException(
+                    $"Unable to open project '{projectFile.FullName}'. Another project is already open: '{other.Path?.FullName}'.");
+            }
+
+            return tia.Projects.Open(projectFile);
+        }
+
+        static Project FindOpenProject(TiaPortal tia, FileInfo projectFile)
+        {
+            foreach (Project project in tia.Projects)
+            {
+                if (project.Path != null &&
+                    string.Equals(project.Path.FullName, projectFile.FullName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return project;
+                }
+            }
+
+            return null;
         }
 
         static void ExportBlockGroup(PlcBlockGroup group, string targetFolder, ref int exportedCount, ref int skippedCount)
