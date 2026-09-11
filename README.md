@@ -111,6 +111,10 @@ each run, so re-runs always reflect the current project state.
 
 ## Optional: Use this tool from Cursor (AI-assisted, no manual commands)
 
+**Clone this repo to exactly `C:\PLC_Tools\plc-openness-export-tool`** so
+the pre-configured MCP setup in project repos (from
+`plc-version-control-template`) works automatically with no path editing.
+
 Instead of running the `.exe` directly, you can wire this tool into
 Cursor so you can trigger exports by just asking in plain English (e.g.
 "export this PLC project" or "what changed since the last commit?").
