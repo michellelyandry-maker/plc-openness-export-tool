@@ -1,225 +1,148 @@
-\# PLC Hardware Export Tool
+# PLC Hardware & Block Export Tool
 
+Exports both the hardware configuration (CPU, modules, network settings)
+and the program blocks (OBs, FBs, data blocks) from a TIA Portal project,
+using the Openness API — so everything can be tracked in Git as readable,
+diffable files.
 
+- Hardware exports to `hardware_config.json`
+- Program blocks export to XML files in a `Blocks/` folder
 
-Exports the hardware configuration (CPU, modules, network settings) from a
-
-TIA Portal project into a `hardware\_config.json` file, so it can be tracked
-
-in Git alongside the program block exports from TIA Portal's Version Control
-
-Interface (VCI).
-
-
-
-\## One-time setup (per computer)
-
-
+## One-time setup (per computer)
 
 Before this tool will run, four things need to be true on your machine:
 
+1. **TIA Portal Openness must be installed.**
+   This normally comes bundled with TIA Portal itself. To check, look for:
 
+C:\Program Files\Siemens\Automation\Portal V16\PublicAPI\V16\Siemens.Engineering.dll
 
-1\. \*\*TIA Portal Openness must be installed.\*\*
+   If that file exists, you're set.
 
-&#x20;  This normally comes bundled with TIA Portal itself. To check, look for:
+2. **.NET Framework 4.7.2 or later must be installed.**
+   Most Windows machines already have this. If the tool fails to launch at
+   all, this is the first thing to check.
 
-&#x20;  ```
+3. **Your Windows account must be a member of the local
+   "Siemens TIA Openness" security group.**
+   This is the step almost everyone gets stuck on — it requires admin
+   rights to set up. If you don't see this group, or don't have admin
+   rights, ask IT to do this for you.
 
-&#x20;  C:\\Program Files\\Siemens\\Automation\\Portal V16\\PublicAPI\\V16\\Siemens.Engineering.dll
+   **To add yourself (requires an Administrator Command Prompt):**
 
-&#x20;  ```
+net localgroup "Siemens TIA Openness" "YOUR_WINDOWS_USERNAME" /add
 
-&#x20;  If that file exists, you're set.
+   Not sure of your exact username? Run `whoami` first — it prints your
+   account name in `COMPUTERNAME\username` format.
 
+   **After running this command, restart your computer.** The group
+   membership won't take effect until you do.
 
+4. **Git must be installed**, with your name and email configured so
+   commits are attributed to you correctly:
 
-2\. \*\*.NET Framework 4.7.2 or later must be installed.\*\*
+git config --global user.name "Your Name"
+git config --global user.email "your.email@company.com"
 
-&#x20;  Most Windows machines already have this. If the tool fails to launch at
-
-&#x20;  all, this is the first thing to check.
-
-
-
-3\. \*\*Your Windows account must be a member of the local
-
-&#x20;  "Siemens TIA Openness" security group.\*\*
-
-&#x20;  This is the step almost everyone gets stuck on — it requires admin
-
-&#x20;  rights to set up. If you don't see this group, or don't have admin
-
-&#x20;  rights, ask IT to do this for you.
-
-
-
-&#x20;  \*\*To add yourself (requires an Administrator Command Prompt):\*\*
-
-&#x20;  ```
-
-&#x20;  net localgroup "Siemens TIA Openness" "YOUR\_WINDOWS\_USERNAME" /add
-
-&#x20;  ```
-
-&#x20;  Not sure of your exact username? Run `whoami` first — it prints your
-
-&#x20;  account name in `COMPUTERNAME\\username` format.
-
-
-
-&#x20;  \*\*After running this command, restart your computer.\*\* The group
-
-&#x20;  membership won't take effect until you do.
-
-
-
-4\. \*\*Git must be installed\*\*, with your name and email configured so
-
-&#x20;  commits are attributed to you correctly:
-
-&#x20;  ```
-
-&#x20;  git config --global user.name "Your Name"
-
-&#x20;  git config --global user.email "your.email@company.com"
-
-&#x20;  ```
-
-&#x20;  Without this, Git may use a generic or missing identity, which makes
-
-&#x20;  it hard to tell who made which change later.
-
-
+   Without this, Git may use a generic or missing identity, which makes
+   it hard to tell who made which change later.
 
 If you skip step 3, the tool will still run but will fail with a
-
 permission error the moment it tries to talk to TIA Portal. The tool
-
 will tell you this directly and print the exact command above if that
-
 happens.
 
+## A quirk to know about: TIA Portal's own "Git Commit" popup
+
+If you ever export a block manually through TIA Portal's Version Control
+Interface (VCI) instead of using this tool, TIA Portal may show its own
+**"Git Commit"** dialog asking for a commit message. **Click Cancel on
+this dialog.** This project manages Git manually (or via the MCP
+integration below), not through VCI's built-in Git feature.
+
+## How to run it manually
+
+1. Make sure your TIA Portal project is **closed** (or open in the same
+   TIA Portal instance you intend to use — don't have two different
+   projects open when you run this).
+2. Run `PLC_Openness_Export.exe` (or `dotnet run` / F5 if running from
+   source) with no arguments for interactive mode.
+3. If you've used the tool before, it will show you the last project path
+   and export folder you used — press Enter to reuse them, or type a new
+   path to use a different project.
+4. If this is your first time, you'll be asked to enter:
+   - The full path to your project's `.ap16` file
+   - The folder to export into (this should be your PLC project's own
+     Git-tracked folder — see the `plc-version-control-template` repo
+     for setting that up)
+5. Wait for TIA Portal to open/attach and the project to load.
+6. When you see `Success. Press Enter to exit.`, the export is done —
+   both `hardware_config.json` and a `Blocks/` folder will be in your
+   chosen export folder.
+
+## Running it non-interactively (command-line arguments)
+
+For scripting or MCP use, pass the paths directly and it will run without
+any prompts, printing a single line of JSON when done:
+
+PLC_Openness_Export.exe --project "C:\path\to\Project.ap16" --output "C:\path\to\export\folder"
 
 
-\## A quirk to know about: TIA Portal's own "Git Commit" popup
-
-
-
-When you export a block through TIA Portal's Version Control Interface
-
-(VCI), TIA Portal may show its own \*\*"Git Commit"\*\* dialog asking for a
-
-commit message. \*\*Click Cancel on this dialog.\*\*
-
-
-
-This tool's workflow does not use VCI's built-in Git commit feature — it
-
-uses one unified Git repository (specific to each PLC project) that you
-
-manage manually with the commands below. If you click OK on VCI's dialog,
-
-it may show an error, or create a second, disconnected version history
-
-that doesn't match the rest of the project. Just Cancel that dialog and
-
-use `git add` / `git commit` yourself, as shown below.
-
-
-
-\## How to run it
-
-
-
-1\. Make sure your TIA Portal project is \*\*closed\*\* (or open in the same
-
-&#x20;  TIA Portal instance you intend to use — don't have two different
-
-&#x20;  projects open when you run this).
-
-2\. Run `PLC\_Openness\_Export.exe` (or `dotnet run` / F5 if running from
-
-&#x20;  source).
-
-3\. If you've used the tool before, it will show you the last project path
-
-&#x20;  and export folder you used — press Enter to reuse them, or type a new
-
-&#x20;  path to use a different project.
-
-4\. If this is your first time, you'll be asked to enter:
-
-&#x20;  - The full path to your project's `.ap16` file
-
-&#x20;  - The folder to export into (this should be your PLC project's own
-
-&#x20;    Git-tracked folder — see the `plc-project-template` repo for setting
-
-&#x20;    that up)
-
-5\. Wait for TIA Portal to open/attach and the project to load.
-
-6\. When you see `Success. Press Enter to exit.`, the export is done.
-
-
-
-\## What to do with the exported file
-
-
-
-This file is meant to be committed to Git alongside the VCI block
-
-exports, in that project's own repository:
-
-
-
+Example success output:
+```json
+{"success":true,"projectName":"MyProject","hardwareConfigPath":"...","blocksFolder":"...","blocksExported":3,"blocksSkipped":0}
 ```
+
+## What to do with the exported files
+
+These files are meant to be committed to Git, in your project's own
+repository:
 
 git add .
-
 git commit -m "Describe what changed, e.g. 'Added digital input module'"
-
 git push
 
-```
 
-
-
-Re-run this tool any time hardware configuration changes, then repeat
-
+Re-run this tool any time hardware or program blocks change, then repeat
 the commit step. `git diff` will show exactly what changed between
-
-versions.
+versions. The tool automatically overwrites previous block exports on
+each run, so re-runs always reflect the current project state.
 
 ## Optional: Use this tool from Cursor (AI-assisted, no manual commands)
 
-Instead of running the .exe directly, you can wire this tool into Cursor
-so you can trigger exports by just asking in plain English (e.g. "export
-this PLC project").
+Instead of running the `.exe` directly, you can wire this tool into
+Cursor so you can trigger exports by just asking in plain English (e.g.
+"export this PLC project" or "what changed since the last commit?").
 
 ### One-time setup
 
-1. Install `uv` (needed to also run the git MCP server, if you're using
-   that too):
+1. Install `uv` (needed to run the git MCP server too, if you use it):
 
 powershell -c "Set-ExecutionPolicy RemoteSigned -scope CurrentUser"
 irm https://astral.sh/uv/install.ps1 | iex
 
+   Open a **new** terminal afterward so the PATH change takes effect.
+
 2. Install Python 3.10+ if you don't have it (https://python.org).
-3. Install the MCP Python SDK (pinned below v2, since this project uses
-   the v1 API):
+
+3. Install the MCP Python SDK, **pinned below version 2** (this project's
+   `server.py` uses the v1 API):
 
 pip install "mcp<2"
 
-4. Build this project in **Release** mode (Build → Configuration Manager
-   → Release → Build Solution), so `server.py` can find the compiled
-   `.exe` next to it.
 
-### Wire it into a project
+4. Clone this repo and build it in **Release** mode:
+   - Visual Studio → **Build → Configuration Manager** → set
+     Configuration to **Release** → **Build → Build Solution**
+   - `server.py` (included in this repo) automatically finds the
+     compiled `.exe` next to it, so no path editing is needed inside
+     this repo.
 
-In the PLC project's own repo (the one you're tracking with Git), create
-a file at `.cursor/mcp.json` with:
+### Wire it into a PLC project's repo
+
+In the PLC project's own Git repo (the one created from
+`plc-version-control-template`), create or edit `.cursor/mcp.json`:
 
 ```json
 {
@@ -230,46 +153,40 @@ a file at `.cursor/mcp.json` with:
     },
     "plc-export": {
       "command": "python",
-      "args": ["[full path to this tool repo]\\server.py"]
+      "args": ["FULL_PATH_TO_THIS_REPO\\server.py"]
     }
   }
 }
 ```
 
-Replace `[full path to this tool repo]` with wherever you cloned this
-repository on your machine (e.g.
-`C:\Users\YourName\source\repos\PLC_Openness_Export`).
+Replace `FULL_PATH_TO_THIS_REPO` with wherever you cloned **this** tool
+repository on your machine, for example:
 
-Open that PLC project's folder in Cursor, and ask it something like:
-
-Export the PLC project at [path to .ap16] to [path to this repo folder]
+C:\Users\YourName\source\repos\PLC_Openness_Export
 
 
+Open the PLC project's folder in Cursor, and try asking it:
 
-\## Troubleshooting
+Export the PLC project at [path to .ap16] to [path to this project's repo folder]
 
 
+Cursor will call the tool, show you what changed, and can commit and
+push for you if you confirm — no manual `git` commands or running the
+`.exe` by hand required.
+
+## Troubleshooting
 
 | Problem | Likely fix |
-
 |---|---|
-
 | "Permission Error" message on run | Your account isn't in the "Siemens TIA Openness" group — see setup step 3 above |
-
 | "That file wasn't found" when entering project path | Double-check the path; make sure you're pointing at the `.ap16` file itself, not the folder |
-
 | "Another project is already open" error | Close whatever project is currently open in TIA Portal, then run the tool again |
-
 | Tool won't launch at all | Check that .NET Framework 4.7.2+ is installed |
+| TIA Portal shows a "Git Commit" popup | Click Cancel — see the note above; this project doesn't use VCI's built-in Git feature |
+| MCP export call times out | TIA Portal can be slow to cold-start; the MCP wrapper's timeout is set to 600 seconds, but very large projects may need it increased further in `server.py` |
+| Export leaves TIA Portal instances running after a timeout | Close them manually via Task Manager before retrying, to avoid "another project is already open" errors |
 
-| TIA Portal shows a "Git Commit" popup after exporting a block | Click Cancel — see the note above |
+## Related repositories
 
-
-
-\## Related repositories
-
-
-
-\- Project-specific version control repos are created from:
-
-&#x20; `plc-project-template` 
+- New PLC projects should be set up using:
+  `plc-version-control-template`
