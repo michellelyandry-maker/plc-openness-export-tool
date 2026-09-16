@@ -3,6 +3,7 @@ using Siemens.Engineering.HW;
 using Siemens.Engineering.HW.Features;
 using Siemens.Engineering.SW;
 using Siemens.Engineering.SW.Blocks;
+using Siemens.Engineering.Compiler;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -20,21 +21,30 @@ namespace PLC_Openness_Export
 
         static void Main(string[] args)
         {
-            // Parse command-line arguments: --project "path" --output "folder"
             string argProjectPath = null;
             string argExportFolder = null;
+            string argImportBlockFile = null;
 
             for (int i = 0; i < args.Length - 1; i++)
             {
                 if (args[i] == "--project") argProjectPath = args[i + 1];
                 if (args[i] == "--output") argExportFolder = args[i + 1];
+                if (args[i] == "--import-block") argImportBlockFile = args[i + 1];
             }
 
-            NonInteractiveMode = !string.IsNullOrWhiteSpace(argProjectPath) && !string.IsNullOrWhiteSpace(argExportFolder);
+            NonInteractiveMode = !string.IsNullOrWhiteSpace(argProjectPath) &&
+                                  (!string.IsNullOrWhiteSpace(argExportFolder) || !string.IsNullOrWhiteSpace(argImportBlockFile));
 
             try
             {
-                RunExport(argProjectPath, argExportFolder);
+                if (!string.IsNullOrWhiteSpace(argImportBlockFile))
+                {
+                    RunImportBlock(argProjectPath, argImportBlockFile);
+                }
+                else
+                {
+                    RunExport(argProjectPath, argExportFolder);
+                }
             }
             catch (Siemens.Engineering.EngineeringSecurityException)
             {
@@ -65,6 +75,225 @@ namespace PLC_Openness_Export
                 Console.WriteLine();
                 Console.WriteLine("Press Enter to exit.");
                 Console.ReadLine();
+            }
+        }
+
+        static TiaPortal ConnectToTia()
+        {
+            var instances = TiaPortal.GetProcesses();
+            if (instances.Any())
+            {
+                if (!NonInteractiveMode) Console.WriteLine("Attached to running TIA Portal instance.");
+                return instances.First().Attach();
+            }
+            else
+            {
+                if (!NonInteractiveMode) Console.WriteLine("Started new TIA Portal instance.");
+                return new TiaPortal(TiaPortalMode.WithUserInterface);
+            }
+        }
+
+        static void CollectCompileMessages(CompilerResultMessageComposition messages, List<string> collected)
+        {
+            if (messages == null)
+                return;
+
+            foreach (CompilerResultMessage message in messages)
+            {
+                if (message.State == CompilerResultState.Error || message.State == CompilerResultState.Warning)
+                {
+                    string path = string.IsNullOrWhiteSpace(message.Path) ? "" : message.Path + ": ";
+                    collected.Add($"[{message.State}] {path}{message.Description}");
+                }
+                CollectCompileMessages(message.Messages, collected);
+            }
+        }
+
+        static PlcBlock FindBlockByName(PlcBlockGroup group, string name)
+        {
+            foreach (PlcBlock block in group.Blocks)
+            {
+                if (string.Equals(block.Name, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return block;
+                }
+            }
+            foreach (PlcBlockGroup subGroup in group.Groups)
+            {
+                var found = FindBlockByName(subGroup, name);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        static void RunImportBlock(string projectPath, string blockXmlPath)
+        {
+            if (string.IsNullOrWhiteSpace(projectPath) || !File.Exists(projectPath))
+            {
+                throw new FileNotFoundException($"Project file not found: {projectPath}");
+            }
+            if (!File.Exists(blockXmlPath))
+            {
+                throw new FileNotFoundException($"Block XML file not found: {blockXmlPath}");
+            }
+
+            TiaPortal tia = ConnectToTia();
+
+            var projectFile = new FileInfo(projectPath);
+            Project project = tia.Projects.Open(projectFile);
+            if (!NonInteractiveMode) Console.WriteLine($"Opened project: {project.Name}");
+
+            var blockFile = new FileInfo(blockXmlPath);
+            string intendedBlockName = Path.GetFileNameWithoutExtension(blockFile.Name);
+
+            bool imported = false;
+            string importedInto = null;
+            string identityWarning = null;
+            string backupPath = null;
+
+            foreach (Device device in project.Devices)
+            {
+                foreach (DeviceItem item in device.DeviceItems)
+                {
+                    var softwareContainer = item.GetService<SoftwareContainer>();
+                    if (softwareContainer?.Software is PlcSoftware plcSoftware)
+                    {
+                        PlcBlock existingBlock = FindBlockByName(plcSoftware.BlockGroup, intendedBlockName);
+
+                        if (existingBlock == null)
+                        {
+                            identityWarning =
+                                $"No existing block named '{intendedBlockName}' was found in this project. " +
+                                "This may mean the XML belongs to a different project, or this is a new block " +
+                                "being added rather than an existing one being restored. Proceeding anyway.";
+                        }
+                        else
+                        {
+                            // Ensure blocks are in a consistent state before attempting to export one
+                            try
+                            {
+                                var preCompileService = plcSoftware.GetService<ICompilable>();
+                                preCompileService?.Compile();
+                            }
+                            catch
+                            {
+                                // If pre-compile fails, we still attempt the backup below;
+                                // the backup's own try/catch will report if it fails too.
+                            }
+
+                            // --- Backup the current block before overwriting ---
+                            try
+                            {
+                                string exportRoot = Directory.GetParent(blockFile.DirectoryName)?.FullName
+                                                    ?? blockFile.DirectoryName;
+                                string backupFolder = Path.Combine(exportRoot, "Backups");
+                                Directory.CreateDirectory(backupFolder);
+
+                                string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                                var backupFile = new FileInfo(
+                                    Path.Combine(backupFolder, $"{intendedBlockName}_{timestamp}.xml"));
+
+                                existingBlock.Export(backupFile, Siemens.Engineering.ExportOptions.WithDefaults);
+                                backupPath = backupFile.FullName;
+                            }
+                            catch (Exception ex)
+                            {
+                                identityWarning = (identityWarning ?? "") +
+                                    $" [Backup of current block failed: {ex.Message}]";
+                            }
+                        }
+
+                        // --- The actual import ---
+                        plcSoftware.BlockGroup.Blocks.Import(
+                            blockFile,
+                            Siemens.Engineering.ImportOptions.Override
+                        );
+                        imported = true;
+                        importedInto = plcSoftware.Name;
+
+                        project.Save();
+
+                        // --- Compile check after import ---
+                        string compileState = "not-checked";
+                        var compileMessages = new List<string>();
+
+                        int compileErrorCount = 0;
+                        int compileWarningCount = 0;
+                        try
+                        {
+                            var compileService = plcSoftware.GetService<ICompilable>();
+                            if (compileService != null)
+                            {
+                                var compileResult = compileService.Compile();
+                                compileState = compileResult.State.ToString();
+                                compileErrorCount = compileResult.ErrorCount;
+                                compileWarningCount = compileResult.WarningCount;
+                                CollectCompileMessages(compileResult.Messages, compileMessages);
+                            }
+                            else
+                            {
+                                compileState = "compile-service-unavailable";
+                                compileErrorCount = 1;
+                                compileMessages.Add("PLC software did not expose ICompilable; compile was skipped.");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            compileState = "compile-check-failed";
+                            compileErrorCount = 1;
+                            compileMessages.Add(ex.Message);
+                        }
+
+                        bool success = compileErrorCount == 0 &&
+                                       !string.Equals(compileState, "Error", StringComparison.OrdinalIgnoreCase);
+
+                        if (NonInteractiveMode)
+                        {
+                            Console.WriteLine(JsonSerializer.Serialize(new
+                            {
+                                success = success,
+                                action = "import-block",
+                                projectName = project.Name,
+                                importedFile = blockXmlPath,
+                                importedInto = importedInto,
+                                identityWarning = identityWarning,
+                                backupOfPreviousVersion = backupPath,
+                                compileState = compileState,
+                                compileErrorCount = compileErrorCount,
+                                compileWarningCount = compileWarningCount,
+                                compileMessages = compileMessages
+                            }));
+                            if (!success)
+                                Environment.Exit(1);
+                        }
+                        else
+                        {
+                            Console.WriteLine(success
+                                ? $"Block imported from: {blockXmlPath}"
+                                : $"Block imported from: {blockXmlPath}, but compile reported errors.");
+                            if (backupPath != null)
+                                Console.WriteLine($"Previous version backed up to: {backupPath}");
+                            if (identityWarning != null)
+                                Console.WriteLine($"WARNING: {identityWarning}");
+                            Console.WriteLine($"Compile state after import: {compileState} ({compileErrorCount} error(s), {compileWarningCount} warning(s))");
+                            if (compileMessages.Count > 0)
+                            {
+                                Console.WriteLine("Compile messages:");
+                                foreach (var m in compileMessages) Console.WriteLine($"  - {m}");
+                            }
+                            Console.WriteLine("Project saved.");
+                            Console.WriteLine("Press Enter to exit.");
+                            Console.ReadLine();
+                        }
+
+                        return;
+                    }
+                }
+            }
+
+            if (!imported)
+            {
+                throw new InvalidOperationException("No PLC software container found in this project to import into.");
             }
         }
 
@@ -101,8 +330,8 @@ namespace PLC_Openness_Export
         static void RunExport(string argProjectPath, string argExportFolder)
         {
             var lastUsed = LoadLastUsedPaths();
+            TiaPortal tia = ConnectToTia();
 
-            // Project path: from args if provided, else interactive prompt
             string projectPath = argProjectPath;
 
             if (string.IsNullOrWhiteSpace(projectPath))
@@ -133,11 +362,9 @@ namespace PLC_Openness_Export
             }
 
             var projectFile = new FileInfo(projectPath);
-            TiaPortal tia = AttachToPortal(projectFile);
-            Project project = GetOrOpenProject(tia, projectFile);
-            if (!NonInteractiveMode) Console.WriteLine($"Using project: {project.Name}");
+            Project project = tia.Projects.Open(projectFile);
+            if (!NonInteractiveMode) Console.WriteLine($"Opened project: {project.Name}");
 
-            // Hardware export
             var deviceList = new List<object>();
             foreach (Device device in project.Devices)
             {
@@ -152,7 +379,6 @@ namespace PLC_Openness_Export
             var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
             string hardwareJson = JsonSerializer.Serialize(deviceList, jsonOptions);
 
-            // Export folder: from args if provided, else interactive prompt
             string exportFolder = argExportFolder;
 
             if (string.IsNullOrWhiteSpace(exportFolder))
@@ -178,7 +404,6 @@ namespace PLC_Openness_Export
             File.WriteAllText(hardwarePath, hardwareJson);
             if (!NonInteractiveMode) Console.WriteLine($"Hardware config exported to: {hardwarePath}");
 
-            // Block export via Openness
             string blocksFolder = Path.Combine(exportFolder, "Blocks");
             Directory.CreateDirectory(blocksFolder);
 
@@ -207,6 +432,7 @@ namespace PLC_Openness_Export
                 Console.WriteLine(JsonSerializer.Serialize(new
                 {
                     success = true,
+                    action = "export",
                     projectName = project.Name,
                     hardwareConfigPath = hardwarePath,
                     blocksFolder = blocksFolder,
@@ -220,59 +446,6 @@ namespace PLC_Openness_Export
                 Console.WriteLine("Success. Press Enter to exit.");
                 Console.ReadLine();
             }
-        }
-
-        static TiaPortal AttachToPortal(FileInfo projectFile)
-        {
-            var processes = TiaPortal.GetProcesses();
-            if (!processes.Any())
-            {
-                if (!NonInteractiveMode) Console.WriteLine("Started new TIA Portal instance.");
-                return new TiaPortal(TiaPortalMode.WithUserInterface);
-            }
-
-            foreach (var process in processes)
-            {
-                TiaPortal attached = process.Attach();
-                if (FindOpenProject(attached, projectFile) != null)
-                {
-                    if (!NonInteractiveMode) Console.WriteLine("Attached to running TIA Portal instance with this project.");
-                    return attached;
-                }
-            }
-
-            if (!NonInteractiveMode) Console.WriteLine("Attached to running TIA Portal instance.");
-            return processes.First().Attach();
-        }
-
-        static Project GetOrOpenProject(TiaPortal tia, FileInfo projectFile)
-        {
-            Project alreadyOpen = FindOpenProject(tia, projectFile);
-            if (alreadyOpen != null)
-                return alreadyOpen;
-
-            if (tia.Projects.Any())
-            {
-                Project other = tia.Projects.First();
-                throw new InvalidOperationException(
-                    $"Unable to open project '{projectFile.FullName}'. Another project is already open: '{other.Path?.FullName}'.");
-            }
-
-            return tia.Projects.Open(projectFile);
-        }
-
-        static Project FindOpenProject(TiaPortal tia, FileInfo projectFile)
-        {
-            foreach (Project project in tia.Projects)
-            {
-                if (project.Path != null &&
-                    string.Equals(project.Path.FullName, projectFile.FullName, StringComparison.OrdinalIgnoreCase))
-                {
-                    return project;
-                }
-            }
-
-            return null;
         }
 
         static void ExportBlockGroup(PlcBlockGroup group, string targetFolder, ref int exportedCount, ref int skippedCount)
