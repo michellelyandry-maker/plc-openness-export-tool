@@ -30,20 +30,71 @@ namespace PLC_Openness_Export
             string argProjectPath = null;
             string argExportFolder = null;
             string argImportBlockFile = null;
+            bool createProject = false;
+            string argTargetDirectory = null;
+            string argProjectName = null;
+            string argCpuType = "OrderNumber:6ES7 214-1AG40-0XB0/V4.4";
+            string argStationName = "S7-1200 station_1";
+            string argPlcName = "PLC_1";
+            string argAction = null;
+            string argTypeIdentifier = null;
+            string argObjectName = null;
+            string argDeviceName = null;
+            string argSubnetName = "PN/IE_1";
+            string argBlockType = "FB";
+            string argLanguage = "LAD";
+            int argPosition = 2;
+            int argNumber = 0;
+            bool asNewStation = false;
 
-            for (int i = 0; i < args.Length - 1; i++)
+            for (int i = 0; i < args.Length; i++)
             {
+                if (args[i] == "--create-project")
+                {
+                    createProject = true;
+                    continue;
+                }
+                if (args[i] == "--as-new-station")
+                {
+                    asNewStation = true;
+                    continue;
+                }
+                if (i >= args.Length - 1)
+                    continue;
                 if (args[i] == "--project") argProjectPath = args[i + 1];
                 if (args[i] == "--output") argExportFolder = args[i + 1];
                 if (args[i] == "--import-block") argImportBlockFile = args[i + 1];
+                if (args[i] == "--target-directory") argTargetDirectory = args[i + 1];
+                if (args[i] == "--name") argObjectName = argProjectName = args[i + 1];
+                if (args[i] == "--cpu-type-identifier") argCpuType = args[i + 1];
+                if (args[i] == "--station-name") argStationName = args[i + 1];
+                if (args[i] == "--plc-name") argPlcName = args[i + 1];
+                if (args[i] == "--action") argAction = args[i + 1];
+                if (args[i] == "--type-identifier") argTypeIdentifier = args[i + 1];
+                if (args[i] == "--device-name") argDeviceName = args[i + 1];
+                if (args[i] == "--subnet-name") argSubnetName = args[i + 1];
+                if (args[i] == "--block-type") argBlockType = args[i + 1];
+                if (args[i] == "--language") argLanguage = args[i + 1];
+                if (args[i] == "--position") int.TryParse(args[i + 1], out argPosition);
+                if (args[i] == "--number") int.TryParse(args[i + 1], out argNumber);
             }
 
-            NonInteractiveMode = !string.IsNullOrWhiteSpace(argProjectPath) &&
-                                  (!string.IsNullOrWhiteSpace(argExportFolder) || !string.IsNullOrWhiteSpace(argImportBlockFile));
+            NonInteractiveMode = createProject || !string.IsNullOrWhiteSpace(argAction) ||
+                (!string.IsNullOrWhiteSpace(argProjectPath) &&
+                 (!string.IsNullOrWhiteSpace(argExportFolder) || !string.IsNullOrWhiteSpace(argImportBlockFile)));
 
             try
             {
-                if (!string.IsNullOrWhiteSpace(argImportBlockFile))
+                if (createProject)
+                {
+                    RunCreateProject(argTargetDirectory, argProjectName, argCpuType, argStationName, argPlcName);
+                }
+                else if (!string.IsNullOrWhiteSpace(argAction))
+                {
+                    RunEditAction(argAction, argProjectPath, argTypeIdentifier, argObjectName, argDeviceName,
+                        argSubnetName, argBlockType, argLanguage, argPosition, argNumber, asNewStation);
+                }
+                else if (!string.IsNullOrWhiteSpace(argImportBlockFile))
                 {
                     RunImportBlock(argProjectPath, argImportBlockFile);
                 }
@@ -84,6 +135,65 @@ namespace PLC_Openness_Export
             }
         }
 
+        static void RunEditAction(
+            string action,
+            string projectPath,
+            string typeIdentifier,
+            string objectName,
+            string deviceName,
+            string subnetName,
+            string blockType,
+            string language,
+            int position,
+            int number,
+            bool asNewStation)
+        {
+            if (string.IsNullOrWhiteSpace(projectPath) || !File.Exists(projectPath))
+                throw new FileNotFoundException("Project file not found: " + projectPath);
+
+            TiaPortal tia = ConnectToTia();
+            Project project = PlcEdits.OpenProject(tia, projectPath);
+            string createdName = null;
+            string normalized = (action ?? "").Trim().ToLowerInvariant();
+
+            if (normalized == "add-hardware")
+                createdName = PlcEdits.AddHardware(project, typeIdentifier, objectName, position, deviceName, asNewStation);
+            else if (normalized == "add-connection")
+                createdName = PlcEdits.AddConnection(project, subnetName, deviceName);
+            else if (normalized == "add-block")
+                createdName = PlcEdits.AddCodeBlock(project, blockType, objectName, language, number);
+            else if (normalized == "add-data-block")
+                createdName = PlcEdits.AddDataBlock(project, objectName, number);
+            else
+                throw new ArgumentException("Unknown action '" + action + "'. Use add-hardware, add-connection, add-block, or add-data-block.");
+
+            project.Save();
+            string exportFolder = Path.GetDirectoryName(projectPath);
+            ProjectExportResult export = ExportProjectFiles(project, exportFolder);
+
+            if (NonInteractiveMode)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    success = true,
+                    action = normalized,
+                    projectName = project.Name,
+                    createdName = createdName,
+                    hardwareConfigPath = export.HardwareConfigPath,
+                    blocksFolder = export.BlocksFolder,
+                    blocksExported = export.BlocksExported,
+                    hmiTargets = export.HmiTargets
+                }));
+            }
+            else
+            {
+                Console.WriteLine("Created: " + createdName);
+                Console.WriteLine("Project saved and exported.");
+                Console.WriteLine("Press Enter to exit.");
+                Console.ReadLine();
+            }
+        }
+
         static TiaPortal ConnectToTia()
         {
             var instances = TiaPortal.GetProcesses();
@@ -112,6 +222,156 @@ namespace PLC_Openness_Export
                     collected.Add($"[{message.State}] {path}{message.Description}");
                 }
                 CollectCompileMessages(message.Messages, collected);
+            }
+        }
+
+        class ProjectExportResult
+        {
+            public string HardwareConfigPath { get; set; }
+            public string BlocksFolder { get; set; }
+            public int BlocksExported { get; set; }
+            public int BlocksSkipped { get; set; }
+            public string HmiFolder { get; set; }
+            public int HmiTargets { get; set; }
+            public int HmiExported { get; set; }
+            public int HmiSkipped { get; set; }
+        }
+
+        static void RunCreateProject(
+            string targetDirectory,
+            string projectName,
+            string cpuTypeIdentifier,
+            string stationName,
+            string plcName)
+        {
+            if (string.IsNullOrWhiteSpace(targetDirectory))
+                throw new ArgumentException("Target directory is required (--target-directory).");
+            if (string.IsNullOrWhiteSpace(projectName))
+                throw new ArgumentException("Project name is required (--name).");
+
+            Directory.CreateDirectory(targetDirectory);
+            string projectFolder = Path.Combine(targetDirectory, projectName);
+            if (Directory.Exists(projectFolder) && Directory.EnumerateFileSystemEntries(projectFolder).Any())
+            {
+                throw new InvalidOperationException(
+                    $"Folder already exists and is not empty: {projectFolder}");
+            }
+
+            TiaPortal tia = ConnectToTia();
+            if (tia.Projects.Any())
+            {
+                throw new InvalidOperationException(
+                    "A TIA Portal project is already open. Close it, then create a new project.");
+            }
+
+            Project project = tia.Projects.Create(new DirectoryInfo(targetDirectory), projectName);
+            if (!NonInteractiveMode) Console.WriteLine($"Created project: {project.Name}");
+
+            string cpuWarning = null;
+            try
+            {
+                project.Devices.CreateWithItem(cpuTypeIdentifier, stationName, plcName);
+            }
+            catch (Exception ex)
+            {
+                cpuWarning = "CPU was not added: " + ex.Message;
+                if (!NonInteractiveMode) Console.WriteLine(cpuWarning);
+            }
+
+            project.Save();
+
+            string ap16Path = Path.Combine(projectFolder, projectName + ".ap16");
+            WriteCursorMcpConfig(projectFolder);
+            WriteProjectGitIgnore(projectFolder);
+            TryGitInit(projectFolder);
+
+            ProjectExportResult export = ExportProjectFiles(project, projectFolder);
+            SaveLastUsedPaths(new LastUsedPaths { ProjectPath = ap16Path, ExportFolder = projectFolder });
+
+            if (NonInteractiveMode)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    success = true,
+                    action = "create-project",
+                    projectName = project.Name,
+                    projectPath = ap16Path,
+                    projectFolder = projectFolder,
+                    cpuTypeIdentifier = cpuTypeIdentifier,
+                    stationName = stationName,
+                    plcName = plcName,
+                    cpuWarning = cpuWarning,
+                    mcpConfigPath = Path.Combine(projectFolder, ".cursor", "mcp.json"),
+                    hardwareConfigPath = export.HardwareConfigPath,
+                    blocksFolder = export.BlocksFolder,
+                    blocksExported = export.BlocksExported,
+                    blocksSkipped = export.BlocksSkipped,
+                    hmiTargets = export.HmiTargets
+                }));
+            }
+            else
+            {
+                Console.WriteLine($"Project file: {ap16Path}");
+                Console.WriteLine("Cursor MCP config and .gitignore were written.");
+                Console.WriteLine("Open that folder in Cursor to use export/git from chat.");
+                Console.WriteLine("Press Enter to exit.");
+                Console.ReadLine();
+            }
+        }
+
+        static void WriteCursorMcpConfig(string projectFolder)
+        {
+            string toolRoot = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", ".."));
+            string serverPy = Path.Combine(toolRoot, "server.py");
+            if (!File.Exists(serverPy))
+                serverPy = @"C:\PLC_Tools\plc-openness-export-tool\server.py";
+
+            string cursorDir = Path.Combine(projectFolder, ".cursor");
+            Directory.CreateDirectory(cursorDir);
+
+            string json =
+                "{" + Environment.NewLine +
+                "  \"mcpServers\": {" + Environment.NewLine +
+                "    \"git\": {" + Environment.NewLine +
+                "      \"command\": \"uvx\"," + Environment.NewLine +
+                "      \"args\": [\"mcp-server-git\", \"--repository\", \".\"]" + Environment.NewLine +
+                "    }," + Environment.NewLine +
+                "    \"plc-export\": {" + Environment.NewLine +
+                "      \"command\": \"python\"," + Environment.NewLine +
+                "      \"args\": [" + JsonSerializer.Serialize(serverPy) + "]" + Environment.NewLine +
+                "    }" + Environment.NewLine +
+                "  }" + Environment.NewLine +
+                "}" + Environment.NewLine;
+
+            File.WriteAllText(Path.Combine(cursorDir, "mcp.json"), json);
+        }
+
+        static void WriteProjectGitIgnore(string projectFolder)
+        {
+            File.WriteAllText(Path.Combine(projectFolder, ".gitignore"),
+                "IM/\r\nLogs/\r\nSystem/\r\nVci/\r\n*.ap16\r\nXRef/\r\n");
+        }
+
+        static void TryGitInit(string projectFolder)
+        {
+            try
+            {
+                if (Directory.Exists(Path.Combine(projectFolder, ".git")))
+                    return;
+
+                var start = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "git",
+                    Arguments = "init",
+                    WorkingDirectory = projectFolder,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using (var process = System.Diagnostics.Process.Start(start))
+                    process?.WaitForExit(15000);
+            }
+            catch
+            {
             }
         }
 
@@ -371,20 +631,6 @@ namespace PLC_Openness_Export
             Project project = tia.Projects.Open(projectFile);
             if (!NonInteractiveMode) Console.WriteLine($"Opened project: {project.Name}");
 
-            var deviceList = new List<object>();
-            foreach (Device device in project.Devices)
-            {
-                var deviceItems = new List<object>();
-                foreach (DeviceItem item in device.DeviceItems)
-                {
-                    deviceItems.Add(BuildDeviceItemData(item));
-                }
-                deviceList.Add(new { DeviceName = device.Name, Modules = deviceItems });
-            }
-
-            var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
-            string hardwareJson = JsonSerializer.Serialize(deviceList, jsonOptions);
-
             string exportFolder = argExportFolder;
 
             if (string.IsNullOrWhiteSpace(exportFolder))
@@ -405,9 +651,52 @@ namespace PLC_Openness_Export
                 }
             }
 
+            ProjectExportResult export = ExportProjectFiles(project, exportFolder);
+            SaveLastUsedPaths(new LastUsedPaths { ProjectPath = projectPath, ExportFolder = exportFolder });
+
+            if (NonInteractiveMode)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    success = true,
+                    action = "export",
+                    projectName = project.Name,
+                    hardwareConfigPath = export.HardwareConfigPath,
+                    blocksFolder = export.BlocksFolder,
+                    blocksExported = export.BlocksExported,
+                    blocksSkipped = export.BlocksSkipped,
+                    hmiFolder = export.HmiFolder,
+                    hmiTargets = export.HmiTargets,
+                    hmiExported = export.HmiExported,
+                    hmiSkipped = export.HmiSkipped
+                }));
+            }
+            else
+            {
+                Console.WriteLine();
+                Console.WriteLine("Success. Press Enter to exit.");
+                Console.ReadLine();
+            }
+        }
+
+        static ProjectExportResult ExportProjectFiles(Project project, string exportFolder)
+        {
             Directory.CreateDirectory(exportFolder);
+
+            var deviceList = new List<object>();
+            foreach (Device device in project.Devices)
+            {
+                var deviceItems = new List<object>();
+                foreach (DeviceItem item in device.DeviceItems)
+                {
+                    deviceItems.Add(BuildDeviceItemData(item));
+                }
+                deviceList.Add(new { DeviceName = device.Name, Modules = deviceItems });
+            }
+
+            var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
             string hardwarePath = Path.Combine(exportFolder, "hardware_config.json");
-            File.WriteAllText(hardwarePath, hardwareJson);
+            File.WriteAllText(hardwarePath, JsonSerializer.Serialize(deviceList, jsonOptions));
             if (!NonInteractiveMode) Console.WriteLine($"Hardware config exported to: {hardwarePath}");
 
             string blocksFolder = Path.Combine(exportFolder, "Blocks");
@@ -458,31 +747,17 @@ namespace PLC_Openness_Export
                     Console.WriteLine($"HMI exported to: {hmiRoot} ({hmiTargets} device(s), {hmiExported} exported, {hmiSkipped} skipped)");
             }
 
-            SaveLastUsedPaths(new LastUsedPaths { ProjectPath = projectPath, ExportFolder = exportFolder });
-
-            if (NonInteractiveMode)
+            return new ProjectExportResult
             {
-                Console.WriteLine(JsonSerializer.Serialize(new
-                {
-                    success = true,
-                    action = "export",
-                    projectName = project.Name,
-                    hardwareConfigPath = hardwarePath,
-                    blocksFolder = blocksFolder,
-                    blocksExported = exportedCount,
-                    blocksSkipped = skippedCount,
-                    hmiFolder = hmiTargets > 0 ? hmiRoot : null,
-                    hmiTargets = hmiTargets,
-                    hmiExported = hmiExported,
-                    hmiSkipped = hmiSkipped
-                }));
-            }
-            else
-            {
-                Console.WriteLine();
-                Console.WriteLine("Success. Press Enter to exit.");
-                Console.ReadLine();
-            }
+                HardwareConfigPath = hardwarePath,
+                BlocksFolder = blocksFolder,
+                BlocksExported = exportedCount,
+                BlocksSkipped = skippedCount,
+                HmiFolder = hmiTargets > 0 ? hmiRoot : null,
+                HmiTargets = hmiTargets,
+                HmiExported = hmiExported,
+                HmiSkipped = hmiSkipped
+            };
         }
 
         static string SafeFileName(string name)
