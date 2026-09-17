@@ -1,4 +1,5 @@
 using Siemens.Engineering;
+using Siemens.Engineering.Hmi;
 using Siemens.Engineering.HW;
 using Siemens.Engineering.HW.Features;
 using Siemens.Engineering.SW;
@@ -124,6 +125,141 @@ namespace PLC_Openness_Export
                     "Could not plug that module. Check the order number, name, slot/position, and that the station is an S7-1200/1500 rack that accepts it.");
             }
             return plugged.Name;
+        }
+
+        public static string AddHmi(
+            Project project,
+            string typeIdentifier,
+            string name,
+            string subnetName,
+            string plcDeviceName)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                name = "HMI_1";
+            Device already = project.Devices.Find(name);
+            if (already != null && FindHmiTarget(already) != null)
+                throw new InvalidOperationException("A device named '" + name + "' already exists.");
+
+            string[] candidates = HmiTypeCandidates(typeIdentifier);
+            Device created = null;
+            string usedType = null;
+            Exception lastError = null;
+            foreach (string candidate in candidates)
+            {
+                var attempts = new[]
+                {
+                    new { Item = (string)null, Device = (string)null },
+                    new { Item = "KTP400 Basic", Device = (string)null },
+                    new { Item = "KTP700 Basic", Device = (string)null },
+                    new { Item = (string)null, Device = name }
+                };
+                foreach (var attempt in attempts)
+                {
+                    try
+                    {
+                        created = project.Devices.CreateWithItem(candidate, attempt.Item, attempt.Device);
+                        if (created != null)
+                        {
+                            usedType = candidate;
+                            break;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        lastError = ex;
+                    }
+                }
+                if (created != null)
+                    break;
+            }
+
+            if (created == null)
+            {
+                throw new InvalidOperationException(
+                    "Could not add an HMI from the hardware catalog. " +
+                    (lastError != null ? lastError.Message : "No matching panel type identifier."));
+            }
+
+            if (string.IsNullOrWhiteSpace(subnetName))
+                subnetName = "PN/IE_1";
+
+            try { AddConnection(project, subnetName, plcDeviceName); }
+            catch { }
+
+            try { AddConnection(project, subnetName, created.Name); }
+            catch { }
+
+            HmiTarget hmi = FindHmiTarget(created);
+            if (hmi == null)
+            {
+                throw new InvalidOperationException(
+                    "Device '" + created.Name + "' was created but is not an HMI/WinCC target.");
+            }
+
+            return created.Name + " (" + hmi.Name + ")" + (usedType != null ? " [" + usedType + "]" : "");
+        }
+
+        static string[] HmiTypeCandidates(string typeIdentifier)
+        {
+            var list = new System.Collections.Generic.List<string>();
+            if (!string.IsNullOrWhiteSpace(typeIdentifier))
+                list.Add(NormalizeTypeIdentifier(typeIdentifier));
+
+            string[] defaults =
+            {
+                "OrderNumber:6AV2 123-2DB03-0AX0/16.0.0.0",
+                "OrderNumber:6AV2 123-2DB03-0AX0/V16.0.0.0",
+                "OrderNumber:6AV2 123-2DB03-0AX0/15.1.0.0",
+                "OrderNumber:6AV2 123-2DB03-0AX0/V15.1.0.0",
+                "OrderNumber:6AV2 123-2DB03-0AX0",
+                "OrderNumber:6AV2 123-2GB03-0AX0/16.0.0.0",
+                "OrderNumber:6AV2 123-2GB03-0AX0/V16.0.0.0",
+                "OrderNumber:6AV2 123-2GB03-0AX0",
+                "OrderNumber:6AV2 124-2DC01-0AX0// Landscape",
+                "OrderNumber:6AV2 124-2DC01-0AX0/16.0.0.0"
+            };
+            foreach (string item in defaults)
+            {
+                if (!list.Contains(item))
+                    list.Add(item);
+            }
+            return list.ToArray();
+        }
+
+        static string NormalizeTypeIdentifier(string typeIdentifier)
+        {
+            if (!typeIdentifier.StartsWith("OrderNumber:", StringComparison.OrdinalIgnoreCase) &&
+                !typeIdentifier.StartsWith("System:", StringComparison.OrdinalIgnoreCase) &&
+                !typeIdentifier.StartsWith("GSD:", StringComparison.OrdinalIgnoreCase))
+            {
+                return "OrderNumber:" + typeIdentifier;
+            }
+            return typeIdentifier;
+        }
+
+        static HmiTarget FindHmiTarget(Device device)
+        {
+            foreach (DeviceItem item in device.DeviceItems)
+            {
+                HmiTarget hmi = FindHmiTarget(item);
+                if (hmi != null)
+                    return hmi;
+            }
+            return null;
+        }
+
+        static HmiTarget FindHmiTarget(DeviceItem item)
+        {
+            var container = item.GetService<SoftwareContainer>();
+            if (container?.Software is HmiTarget hmi)
+                return hmi;
+            foreach (DeviceItem child in item.DeviceItems)
+            {
+                HmiTarget nested = FindHmiTarget(child);
+                if (nested != null)
+                    return nested;
+            }
+            return null;
         }
 
         static DeviceItem TryPlug(Device device, string typeIdentifier, string name, int position)

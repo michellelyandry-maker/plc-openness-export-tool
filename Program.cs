@@ -151,13 +151,15 @@ namespace PLC_Openness_Export
             if (string.IsNullOrWhiteSpace(projectPath) || !File.Exists(projectPath))
                 throw new FileNotFoundException("Project file not found: " + projectPath);
 
-            TiaPortal tia = ConnectToTia();
+            TiaPortal tia = ConnectToTia(projectPath);
             Project project = PlcEdits.OpenProject(tia, projectPath);
             string createdName = null;
             string normalized = (action ?? "").Trim().ToLowerInvariant();
 
             if (normalized == "add-hardware")
                 createdName = PlcEdits.AddHardware(project, typeIdentifier, objectName, position, deviceName, asNewStation);
+            else if (normalized == "add-hmi")
+                createdName = PlcEdits.AddHmi(project, typeIdentifier, objectName, subnetName, deviceName);
             else if (normalized == "add-connection")
                 createdName = PlcEdits.AddConnection(project, subnetName, deviceName);
             else if (normalized == "add-block")
@@ -165,7 +167,7 @@ namespace PLC_Openness_Export
             else if (normalized == "add-data-block")
                 createdName = PlcEdits.AddDataBlock(project, objectName, number);
             else
-                throw new ArgumentException("Unknown action '" + action + "'. Use add-hardware, add-connection, add-block, or add-data-block.");
+                throw new ArgumentException("Unknown action '" + action + "'. Use add-hardware, add-hmi, add-connection, add-block, or add-data-block.");
 
             project.Save();
             string exportFolder = Path.GetDirectoryName(projectPath);
@@ -194,19 +196,30 @@ namespace PLC_Openness_Export
             }
         }
 
-        static TiaPortal ConnectToTia()
+        static TiaPortal ConnectToTia(string preferredProjectPath = null)
         {
             var instances = TiaPortal.GetProcesses();
-            if (instances.Any())
-            {
-                if (!NonInteractiveMode) Console.WriteLine("Attached to running TIA Portal instance.");
-                return instances.First().Attach();
-            }
-            else
+            if (!instances.Any())
             {
                 if (!NonInteractiveMode) Console.WriteLine("Started new TIA Portal instance.");
                 return new TiaPortal(TiaPortalMode.WithUserInterface);
             }
+
+            TiaPortalProcess chosen = null;
+            if (!string.IsNullOrWhiteSpace(preferredProjectPath))
+            {
+                string full = Path.GetFullPath(preferredProjectPath);
+                chosen = instances.FirstOrDefault(p =>
+                    p.ProjectPath != null &&
+                    string.Equals(p.ProjectPath.FullName, full, StringComparison.OrdinalIgnoreCase));
+            }
+            if (chosen == null)
+                chosen = instances.FirstOrDefault(p => p.ProjectPath != null);
+            if (chosen == null)
+                chosen = instances.First();
+
+            if (!NonInteractiveMode) Console.WriteLine("Attached to running TIA Portal instance.");
+            return chosen.Attach();
         }
 
         static void CollectCompileMessages(CompilerResultMessageComposition messages, List<string> collected)
@@ -403,7 +416,7 @@ namespace PLC_Openness_Export
                 throw new FileNotFoundException($"Block XML file not found: {blockXmlPath}");
             }
 
-            TiaPortal tia = ConnectToTia();
+            TiaPortal tia = ConnectToTia(projectPath);
 
             var projectFile = new FileInfo(projectPath);
             Project project = tia.Projects.Open(projectFile);
@@ -596,7 +609,7 @@ namespace PLC_Openness_Export
         static void RunExport(string argProjectPath, string argExportFolder)
         {
             var lastUsed = LoadLastUsedPaths();
-            TiaPortal tia = ConnectToTia();
+            TiaPortal tia = ConnectToTia(argProjectPath);
 
             string projectPath = argProjectPath;
 

@@ -110,6 +110,35 @@ def add_plc_hardware(
 
 
 @mcp.tool()
+def add_plc_hmi(
+    project_path: str,
+    name: str = "HMI_1",
+    type_identifier: str = "",
+    subnet_name: str = "PN/IE_1",
+    plc_device_name: str = "",
+) -> dict:
+    """
+    Adds a SIMATIC HMI panel (KTP400 Basic by default) to an existing TIA Portal
+    V16 project, connects it and the PLC to a PN/IE subnet, then saves and
+    exports. Close any other open TIA project first.
+
+    Args:
+        project_path: Full path to the .ap16 project file.
+        name: HMI station name.
+        type_identifier: Optional catalog order number. Empty tries common
+            KTP400/KTP700 Basic panels for V16.
+        subnet_name: Subnet to share with the PLC.
+        plc_device_name: PLC station to put on the same subnet. Empty uses the first device.
+    """
+    extra = ["--name", name, "--subnet-name", subnet_name]
+    if type_identifier:
+        extra.extend(["--type-identifier", type_identifier])
+    if plc_device_name:
+        extra.extend(["--device-name", plc_device_name])
+    return _project_args(project_path, "add-hmi", extra)
+
+
+@mcp.tool()
 def add_plc_connection(
     project_path: str,
     subnet_name: str = "PN/IE_1",
