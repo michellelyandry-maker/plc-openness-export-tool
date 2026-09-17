@@ -1,4 +1,7 @@
 bin/
 obj/
+.vs/
+packages/
+*.slnx
 last_used_paths.json
 *.user
