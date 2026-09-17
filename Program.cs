@@ -1,9 +1,15 @@
 ﻿using Siemens.Engineering;
+using Siemens.Engineering.Compiler;
+using Siemens.Engineering.Hmi;
+using Siemens.Engineering.Hmi.Communication;
+using Siemens.Engineering.Hmi.RuntimeScripting;
+using Siemens.Engineering.Hmi.Screen;
+using Siemens.Engineering.Hmi.Tag;
+using Siemens.Engineering.Hmi.TextGraphicList;
 using Siemens.Engineering.HW;
 using Siemens.Engineering.HW.Features;
 using Siemens.Engineering.SW;
 using Siemens.Engineering.SW.Blocks;
-using Siemens.Engineering.Compiler;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -425,6 +431,33 @@ namespace PLC_Openness_Export
             if (!NonInteractiveMode)
                 Console.WriteLine($"Program blocks exported to: {blocksFolder} ({exportedCount} exported, {skippedCount} skipped)");
 
+            string hmiRoot = Path.Combine(exportFolder, "Hmi");
+            int hmiTargets = 0;
+            int hmiExported = 0;
+            int hmiSkipped = 0;
+
+            foreach (Device device in project.Devices)
+            {
+                foreach (DeviceItem item in device.DeviceItems)
+                {
+                    var softwareContainer = item.GetService<SoftwareContainer>();
+                    if (softwareContainer?.Software is HmiTarget hmiTarget)
+                    {
+                        hmiTargets++;
+                        string targetFolder = Path.Combine(hmiRoot, SafeFileName(hmiTarget.Name));
+                        ExportHmiTarget(hmiTarget, targetFolder, ref hmiExported, ref hmiSkipped);
+                    }
+                }
+            }
+
+            if (!NonInteractiveMode)
+            {
+                if (hmiTargets == 0)
+                    Console.WriteLine("No HMI / WinCC device found in this project. Nothing to export under Hmi/.");
+                else
+                    Console.WriteLine($"HMI exported to: {hmiRoot} ({hmiTargets} device(s), {hmiExported} exported, {hmiSkipped} skipped)");
+            }
+
             SaveLastUsedPaths(new LastUsedPaths { ProjectPath = projectPath, ExportFolder = exportFolder });
 
             if (NonInteractiveMode)
@@ -437,7 +470,11 @@ namespace PLC_Openness_Export
                     hardwareConfigPath = hardwarePath,
                     blocksFolder = blocksFolder,
                     blocksExported = exportedCount,
-                    blocksSkipped = skippedCount
+                    blocksSkipped = skippedCount,
+                    hmiFolder = hmiTargets > 0 ? hmiRoot : null,
+                    hmiTargets = hmiTargets,
+                    hmiExported = hmiExported,
+                    hmiSkipped = hmiSkipped
                 }));
             }
             else
@@ -448,27 +485,233 @@ namespace PLC_Openness_Export
             }
         }
 
+        static string SafeFileName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return "unnamed";
+            return string.Join("_", name.Split(Path.GetInvalidFileNameChars()));
+        }
+
+        static void ExportXml(string folder, string name, Action<FileInfo> export, ref int exportedCount, ref int skippedCount)
+        {
+            try
+            {
+                Directory.CreateDirectory(folder);
+                var exportFile = new FileInfo(Path.Combine(folder, SafeFileName(name) + ".xml"));
+                if (exportFile.Exists)
+                    exportFile.Delete();
+                export(exportFile);
+                exportedCount++;
+            }
+            catch
+            {
+                skippedCount++;
+            }
+        }
+
+        static void ExportHmiTarget(HmiTarget hmi, string targetFolder, ref int exportedCount, ref int skippedCount)
+        {
+            ExportScreenTree(hmi.ScreenFolder, Path.Combine(targetFolder, "Screens"), ref exportedCount, ref skippedCount);
+            ExportPopupTree(hmi.ScreenPopupFolder, Path.Combine(targetFolder, "Popups"), ref exportedCount, ref skippedCount);
+            ExportTemplateTree(hmi.ScreenTemplateFolder, Path.Combine(targetFolder, "Templates"), ref exportedCount, ref skippedCount);
+            ExportTagTree(hmi.TagFolder, Path.Combine(targetFolder, "Tags"), ref exportedCount, ref skippedCount);
+            ExportScriptTree(hmi.VBScriptFolder, Path.Combine(targetFolder, "Scripts"), ref exportedCount, ref skippedCount);
+
+            if (hmi.ScreenGlobalElements != null)
+            {
+                ExportXml(targetFolder, "ScreenGlobalElements",
+                    file => hmi.ScreenGlobalElements.Export(file, ExportOptions.WithDefaults),
+                    ref exportedCount, ref skippedCount);
+            }
+
+            if (hmi.ScreenOverview != null)
+            {
+                ExportXml(targetFolder, "ScreenOverview",
+                    file => hmi.ScreenOverview.Export(file, ExportOptions.WithDefaults),
+                    ref exportedCount, ref skippedCount);
+            }
+
+            foreach (Connection connection in hmi.Connections)
+            {
+                ExportXml(Path.Combine(targetFolder, "Connections"), connection.Name,
+                    file => connection.Export(file, ExportOptions.WithDefaults),
+                    ref exportedCount, ref skippedCount);
+            }
+
+            foreach (TextList textList in hmi.TextLists)
+            {
+                ExportXml(Path.Combine(targetFolder, "TextLists"), textList.Name,
+                    file => textList.Export(file, ExportOptions.WithDefaults),
+                    ref exportedCount, ref skippedCount);
+            }
+
+            foreach (GraphicList graphicList in hmi.GraphicLists)
+            {
+                ExportXml(Path.Combine(targetFolder, "GraphicLists"), graphicList.Name,
+                    file => graphicList.Export(file, ExportOptions.WithDefaults),
+                    ref exportedCount, ref skippedCount);
+            }
+        }
+
+        static void ExportScreenTree(ScreenFolder folder, string directory, ref int exportedCount, ref int skippedCount)
+        {
+            if (folder == null)
+                return;
+
+            foreach (Screen screen in folder.Screens)
+            {
+                ExportXml(directory, screen.Name,
+                    file => screen.Export(file, ExportOptions.WithDefaults),
+                    ref exportedCount, ref skippedCount);
+            }
+
+            foreach (ScreenUserFolder subFolder in folder.Folders)
+            {
+                ExportScreenTree(subFolder, Path.Combine(directory, SafeFileName(subFolder.Name)),
+                    ref exportedCount, ref skippedCount);
+            }
+        }
+
+        static void ExportPopupTree(ScreenPopupFolder folder, string directory, ref int exportedCount, ref int skippedCount)
+        {
+            if (folder == null)
+                return;
+
+            foreach (ScreenPopup popup in folder.ScreenPopups)
+            {
+                ExportXml(directory, popup.Name,
+                    file => popup.Export(file, ExportOptions.WithDefaults),
+                    ref exportedCount, ref skippedCount);
+            }
+
+            foreach (ScreenPopupUserFolder subFolder in folder.Folders)
+            {
+                ExportPopupUserTree(subFolder, Path.Combine(directory, SafeFileName(subFolder.Name)),
+                    ref exportedCount, ref skippedCount);
+            }
+        }
+
+        static void ExportPopupUserTree(ScreenPopupUserFolder folder, string directory, ref int exportedCount, ref int skippedCount)
+        {
+            if (folder == null)
+                return;
+
+            foreach (ScreenPopup popup in folder.ScreenPopups)
+            {
+                ExportXml(directory, popup.Name,
+                    file => popup.Export(file, ExportOptions.WithDefaults),
+                    ref exportedCount, ref skippedCount);
+            }
+
+            foreach (ScreenPopupUserFolder subFolder in folder.Folders)
+            {
+                ExportPopupUserTree(subFolder, Path.Combine(directory, SafeFileName(subFolder.Name)),
+                    ref exportedCount, ref skippedCount);
+            }
+        }
+
+        static void ExportTemplateTree(ScreenTemplateFolder folder, string directory, ref int exportedCount, ref int skippedCount)
+        {
+            if (folder == null)
+                return;
+
+            foreach (ScreenTemplate template in folder.ScreenTemplates)
+            {
+                ExportXml(directory, template.Name,
+                    file => template.Export(file, ExportOptions.WithDefaults),
+                    ref exportedCount, ref skippedCount);
+            }
+
+            foreach (ScreenTemplateUserFolder subFolder in folder.Folders)
+            {
+                ExportTemplateUserTree(subFolder, Path.Combine(directory, SafeFileName(subFolder.Name)),
+                    ref exportedCount, ref skippedCount);
+            }
+        }
+
+        static void ExportTemplateUserTree(ScreenTemplateUserFolder folder, string directory, ref int exportedCount, ref int skippedCount)
+        {
+            if (folder == null)
+                return;
+
+            foreach (ScreenTemplate template in folder.ScreenTemplates)
+            {
+                ExportXml(directory, template.Name,
+                    file => template.Export(file, ExportOptions.WithDefaults),
+                    ref exportedCount, ref skippedCount);
+            }
+
+            foreach (ScreenTemplateUserFolder subFolder in folder.Folders)
+            {
+                ExportTemplateUserTree(subFolder, Path.Combine(directory, SafeFileName(subFolder.Name)),
+                    ref exportedCount, ref skippedCount);
+            }
+        }
+
+        static void ExportTagTree(TagFolder folder, string directory, ref int exportedCount, ref int skippedCount)
+        {
+            if (folder == null)
+                return;
+
+            foreach (TagTable table in folder.TagTables)
+            {
+                ExportXml(directory, table.Name,
+                    file => table.Export(file, ExportOptions.WithDefaults),
+                    ref exportedCount, ref skippedCount);
+            }
+
+            foreach (TagUserFolder subFolder in folder.Folders)
+            {
+                ExportTagTree(subFolder, Path.Combine(directory, SafeFileName(subFolder.Name)),
+                    ref exportedCount, ref skippedCount);
+            }
+        }
+
+        static void ExportScriptTree(VBScriptFolder folder, string directory, ref int exportedCount, ref int skippedCount)
+        {
+            if (folder == null)
+                return;
+
+            foreach (VBScript script in folder.VBScripts)
+            {
+                ExportXml(directory, script.Name,
+                    file => script.Export(file, ExportOptions.WithDefaults),
+                    ref exportedCount, ref skippedCount);
+            }
+
+            foreach (VBScriptUserFolder subFolder in folder.Folders)
+            {
+                ExportScriptUserTree(subFolder, Path.Combine(directory, SafeFileName(subFolder.Name)),
+                    ref exportedCount, ref skippedCount);
+            }
+        }
+
+        static void ExportScriptUserTree(VBScriptUserFolder folder, string directory, ref int exportedCount, ref int skippedCount)
+        {
+            if (folder == null)
+                return;
+
+            foreach (VBScript script in folder.VBScripts)
+            {
+                ExportXml(directory, script.Name,
+                    file => script.Export(file, ExportOptions.WithDefaults),
+                    ref exportedCount, ref skippedCount);
+            }
+
+            foreach (VBScriptUserFolder subFolder in folder.Folders)
+            {
+                ExportScriptUserTree(subFolder, Path.Combine(directory, SafeFileName(subFolder.Name)),
+                    ref exportedCount, ref skippedCount);
+            }
+        }
+
         static void ExportBlockGroup(PlcBlockGroup group, string targetFolder, ref int exportedCount, ref int skippedCount)
         {
             foreach (PlcBlock block in group.Blocks)
             {
-                try
-                {
-                    string safeName = string.Join("_", block.Name.Split(Path.GetInvalidFileNameChars()));
-                    var exportFile = new FileInfo(Path.Combine(targetFolder, $"{safeName}.xml"));
-
-                    if (exportFile.Exists)
-                    {
-                        exportFile.Delete();
-                    }
-
-                    block.Export(exportFile, Siemens.Engineering.ExportOptions.WithDefaults);
-                    exportedCount++;
-                }
-                catch
-                {
-                    skippedCount++;
-                }
+                ExportXml(targetFolder, block.Name,
+                    file => block.Export(file, ExportOptions.WithDefaults),
+                    ref exportedCount, ref skippedCount);
             }
 
             foreach (PlcBlockGroup subGroup in group.Groups)
