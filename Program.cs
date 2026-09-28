@@ -10,6 +10,8 @@ using Siemens.Engineering.HW;
 using Siemens.Engineering.HW.Features;
 using Siemens.Engineering.SW;
 using Siemens.Engineering.SW.Blocks;
+using Siemens.Engineering.SW.Tags;
+using Siemens.Engineering.SW.Types;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -184,7 +186,10 @@ namespace PLC_Openness_Export
                     hardwareConfigPath = export.HardwareConfigPath,
                     blocksFolder = export.BlocksFolder,
                     blocksExported = export.BlocksExported,
-                    hmiTargets = export.HmiTargets
+                    hmiTargets = export.HmiTargets,
+                    tagTablesExported = export.TagTablesExported,
+                    typesExported = export.TypesExported,
+                    skippedItems = export.SkippedItems
                 }));
             }
             else
@@ -238,12 +243,25 @@ namespace PLC_Openness_Export
             }
         }
 
+        class SkipRecord
+        {
+            public string name { get; set; }
+            public string reason { get; set; }
+        }
+
         class ProjectExportResult
         {
             public string HardwareConfigPath { get; set; }
             public string BlocksFolder { get; set; }
             public int BlocksExported { get; set; }
             public int BlocksSkipped { get; set; }
+            public string TagsFolder { get; set; }
+            public int TagTablesExported { get; set; }
+            public int TagTablesSkipped { get; set; }
+            public string TypesFolder { get; set; }
+            public int TypesExported { get; set; }
+            public int TypesSkipped { get; set; }
+            public List<SkipRecord> SkippedItems { get; set; }
             public string HmiFolder { get; set; }
             public int HmiTargets { get; set; }
             public int HmiExported { get; set; }
@@ -319,6 +337,11 @@ namespace PLC_Openness_Export
                     blocksFolder = export.BlocksFolder,
                     blocksExported = export.BlocksExported,
                     blocksSkipped = export.BlocksSkipped,
+                    tagTablesExported = export.TagTablesExported,
+                    tagTablesSkipped = export.TagTablesSkipped,
+                    typesExported = export.TypesExported,
+                    typesSkipped = export.TypesSkipped,
+                    skippedItems = export.SkippedItems,
                     hmiTargets = export.HmiTargets
                 }));
             }
@@ -678,6 +701,11 @@ namespace PLC_Openness_Export
                     blocksFolder = export.BlocksFolder,
                     blocksExported = export.BlocksExported,
                     blocksSkipped = export.BlocksSkipped,
+                    tagTablesExported = export.TagTablesExported,
+                    tagTablesSkipped = export.TagTablesSkipped,
+                    typesExported = export.TypesExported,
+                    typesSkipped = export.TypesSkipped,
+                    skippedItems = export.SkippedItems,
                     hmiFolder = export.HmiFolder,
                     hmiTargets = export.HmiTargets,
                     hmiExported = export.HmiExported,
@@ -733,6 +761,43 @@ namespace PLC_Openness_Export
             if (!NonInteractiveMode)
                 Console.WriteLine($"Program blocks exported to: {blocksFolder} ({exportedCount} exported, {skippedCount} skipped)");
 
+            var skippedItems = new List<SkipRecord>();
+
+            string tagsFolder = Path.Combine(exportFolder, "Tags");
+            Directory.CreateDirectory(tagsFolder);
+            ClearXmlFiles(tagsFolder);
+            int tagExported = 0;
+            int tagSkipped = 0;
+            var usedTagNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            string typesFolder = Path.Combine(exportFolder, "Types");
+            Directory.CreateDirectory(typesFolder);
+            ClearXmlFiles(typesFolder);
+            int typeExported = 0;
+            int typeSkipped = 0;
+            var usedTypeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (Device device in project.Devices)
+            {
+                foreach (DeviceItem item in device.DeviceItems)
+                {
+                    var softwareContainer = item.GetService<SoftwareContainer>();
+                    if (softwareContainer?.Software is PlcSoftware plcSoftware)
+                    {
+                        ExportPlcTagTables(plcSoftware.TagTableGroup, tagsFolder, usedTagNames, skippedItems,
+                            ref tagExported, ref tagSkipped);
+                        ExportPlcTypes(plcSoftware.TypeGroup, typesFolder, usedTypeNames, skippedItems,
+                            ref typeExported, ref typeSkipped);
+                    }
+                }
+            }
+
+            if (!NonInteractiveMode)
+            {
+                Console.WriteLine($"Tag tables exported to: {tagsFolder} ({tagExported} exported, {tagSkipped} skipped)");
+                Console.WriteLine($"User data types exported to: {typesFolder} ({typeExported} exported, {typeSkipped} skipped)");
+            }
+
             string hmiRoot = Path.Combine(exportFolder, "Hmi");
             int hmiTargets = 0;
             int hmiExported = 0;
@@ -766,6 +831,13 @@ namespace PLC_Openness_Export
                 BlocksFolder = blocksFolder,
                 BlocksExported = exportedCount,
                 BlocksSkipped = skippedCount,
+                TagsFolder = tagsFolder,
+                TagTablesExported = tagExported,
+                TagTablesSkipped = tagSkipped,
+                TypesFolder = typesFolder,
+                TypesExported = typeExported,
+                TypesSkipped = typeSkipped,
+                SkippedItems = skippedItems,
                 HmiFolder = hmiTargets > 0 ? hmiRoot : null,
                 HmiTargets = hmiTargets,
                 HmiExported = hmiExported,
@@ -1005,6 +1077,121 @@ namespace PLC_Openness_Export
             foreach (PlcBlockGroup subGroup in group.Groups)
             {
                 ExportBlockGroup(subGroup, targetFolder, ref exportedCount, ref skippedCount);
+            }
+        }
+
+        static void ClearXmlFiles(string folder)
+        {
+            if (!Directory.Exists(folder))
+                return;
+            foreach (string file in Directory.GetFiles(folder, "*.xml"))
+                File.Delete(file);
+        }
+
+        static void ExportPlcTagTables(
+            PlcTagTableSystemGroup group,
+            string targetFolder,
+            HashSet<string> usedNames,
+            List<SkipRecord> skippedItems,
+            ref int exportedCount,
+            ref int skippedCount)
+        {
+            ExportPlcTagTables(group.TagTables, group.Groups, targetFolder, usedNames, skippedItems,
+                ref exportedCount, ref skippedCount);
+        }
+
+        static void ExportPlcTagTables(
+            PlcTagTableComposition tables,
+            PlcTagTableUserGroupComposition groups,
+            string targetFolder,
+            HashSet<string> usedNames,
+            List<SkipRecord> skippedItems,
+            ref int exportedCount,
+            ref int skippedCount)
+        {
+            foreach (PlcTagTable table in tables)
+            {
+                ExportUniqueXml(targetFolder, table.Name,
+                    file => table.Export(file, ExportOptions.WithDefaults),
+                    usedNames, skippedItems, ref exportedCount, ref skippedCount);
+            }
+
+            foreach (PlcTagTableUserGroup subGroup in groups)
+            {
+                ExportPlcTagTables(subGroup.TagTables, subGroup.Groups, targetFolder, usedNames, skippedItems,
+                    ref exportedCount, ref skippedCount);
+            }
+        }
+
+        static void ExportPlcTypes(
+            PlcTypeSystemGroup group,
+            string targetFolder,
+            HashSet<string> usedNames,
+            List<SkipRecord> skippedItems,
+            ref int exportedCount,
+            ref int skippedCount)
+        {
+            ExportPlcTypes(group.Types, group.Groups, targetFolder, usedNames, skippedItems,
+                ref exportedCount, ref skippedCount);
+        }
+
+        static void ExportPlcTypes(
+            PlcTypeComposition types,
+            PlcTypeUserGroupComposition groups,
+            string targetFolder,
+            HashSet<string> usedNames,
+            List<SkipRecord> skippedItems,
+            ref int exportedCount,
+            ref int skippedCount)
+        {
+            foreach (PlcType type in types)
+            {
+                ExportUniqueXml(targetFolder, type.Name,
+                    file => type.Export(file, ExportOptions.WithDefaults),
+                    usedNames, skippedItems, ref exportedCount, ref skippedCount);
+            }
+
+            foreach (PlcTypeUserGroup subGroup in groups)
+            {
+                ExportPlcTypes(subGroup.Types, subGroup.Groups, targetFolder, usedNames, skippedItems,
+                    ref exportedCount, ref skippedCount);
+            }
+        }
+
+        static void ExportUniqueXml(
+            string folder,
+            string name,
+            Action<FileInfo> export,
+            HashSet<string> usedNames,
+            List<SkipRecord> skippedItems,
+            ref int exportedCount,
+            ref int skippedCount)
+        {
+            string safe = SafeFileName(name);
+            if (!usedNames.Add(safe))
+            {
+                skippedCount++;
+                skippedItems.Add(new SkipRecord
+                {
+                    name = name,
+                    reason = "duplicate filesystem-safe name '" + safe + "'"
+                });
+                return;
+            }
+
+            try
+            {
+                Directory.CreateDirectory(folder);
+                var exportFile = new FileInfo(Path.Combine(folder, safe + ".xml"));
+                if (exportFile.Exists)
+                    exportFile.Delete();
+                export(exportFile);
+                exportedCount++;
+            }
+            catch (Exception ex)
+            {
+                skippedCount++;
+                skippedItems.Add(new SkipRecord { name = name, reason = ex.Message });
             }
         }
 

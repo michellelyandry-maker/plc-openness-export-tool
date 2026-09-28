@@ -1,12 +1,14 @@
 # PLC Hardware & Block Export Tool
 
 Exports both the hardware configuration (CPU, modules, network settings)
-and the program blocks (OBs, FBs, data blocks) from a TIA Portal project,
-using the Openness API — so everything can be tracked in Git as readable,
-diffable files.
+and the program blocks (OBs, FBs, data blocks), PLC tag tables, and user
+data types (UDTs) from a TIA Portal project, using the Openness API — so
+everything can be tracked in Git as readable, diffable files.
 
 - Hardware exports to `hardware_config.json`
 - Program blocks export to XML files in a `Blocks/` folder
+- PLC tag tables export to XML files in a `Tags/` folder
+- User data types (UDTs) export to XML files in a `Types/` folder
 
 ## One-time setup (per computer)
 
@@ -78,7 +80,8 @@ integration below), not through VCI's built-in Git feature.
      for setting that up)
 5. Wait for TIA Portal to open/attach and the project to load.
 6. When you see `Success. Press Enter to exit.`, the export is done —
-   both `hardware_config.json` and a `Blocks/` folder will be in your
+   `hardware_config.json`, a `Blocks/` folder, a `Tags/` folder, and a
+   `Types/` folder will be in your
    chosen export folder.
 
 ## Running it non-interactively (command-line arguments)
@@ -91,7 +94,7 @@ PLC_Openness_Export.exe --project "C:\path\to\Project.ap16" --output "C:\path\to
 
 Example success output:
 ```json
-{"success":true,"projectName":"MyProject","hardwareConfigPath":"...","blocksFolder":"...","blocksExported":3,"blocksSkipped":0}
+{"success":true,"projectName":"MyProject","hardwareConfigPath":"...","blocksFolder":"...","blocksExported":3,"blocksSkipped":0,"tagTablesExported":1,"tagTablesSkipped":0,"typesExported":1,"typesSkipped":0,"skippedItems":[]}
 ```
 
 ## What to do with the exported files
@@ -104,10 +107,12 @@ git commit -m "Describe what changed, e.g. 'Added digital input module'"
 git push
 
 
-Re-run this tool any time hardware or program blocks change, then repeat
-the commit step. `git diff` will show exactly what changed between
-versions. The tool automatically overwrites previous block exports on
-each run, so re-runs always reflect the current project state.
+Re-run this tool any time hardware, program blocks, tag tables, or UDTs
+change, then repeat the commit step. `git diff` will show exactly what
+changed between versions. The tool automatically overwrites previous
+block exports on each run, and deletes leftover `*.xml` files in `Tags/`
+and `Types/` before those folders are written, so re-runs always reflect
+the current project state.
 
 ## Optional: Use this tool from Cursor (AI-assisted, no manual commands)
 
