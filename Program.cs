@@ -441,8 +441,7 @@ namespace PLC_Openness_Export
 
             TiaPortal tia = ConnectToTia(projectPath);
 
-            var projectFile = new FileInfo(projectPath);
-            Project project = tia.Projects.Open(projectFile);
+            Project project = PlcEdits.OpenProject(tia, projectPath);
             if (!NonInteractiveMode) Console.WriteLine($"Opened project: {project.Name}");
 
             var blockFile = new FileInfo(blockXmlPath);
@@ -663,8 +662,7 @@ namespace PLC_Openness_Export
                 throw new FileNotFoundException($"Project file not found: {projectPath}");
             }
 
-            var projectFile = new FileInfo(projectPath);
-            Project project = tia.Projects.Open(projectFile);
+            Project project = PlcEdits.OpenProject(tia, projectPath);
             if (!NonInteractiveMode) Console.WriteLine($"Opened project: {project.Name}");
 
             string exportFolder = argExportFolder;
